@@ -1,0 +1,121 @@
+import json
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageHandler, Filters
+from deepl import Translator  # для DeepL API
+import os
+
+# Инициализация API переводчика DeepL
+DEEPL_API_KEY = "bf8e13df-e12a-4e54-a205-e026c8edaa2e:fx"
+translator = Translator(DEEPL_API_KEY)
+
+# Загрузка и сохранение настроек
+USER_DATA_FILE = "user_data.json"
+
+def load_user_data():
+    if os.path.exists(USER_DATA_FILE):
+        with open(USER_DATA_FILE, "r") as file:
+            return json.load(file)
+    return {}
+
+def save_user_data(data):
+    with open(USER_DATA_FILE, "w") as file:
+        json.dump(data, file)
+
+user_data = load_user_data()
+
+# Стартовое сообщение
+def start(update: Update, context):
+    user_id = str(update.message.from_user.id)
+    user_data.setdefault(user_id, {"nickname": None, "language": None, "warnings": 0})
+    save_user_data(user_data)
+    send_intro_message(update, context)
+
+# Ввод никнейма
+def set_nickname(update: Update, context):
+    user_id = str(update.message.from_user.id)
+    nickname = ' '.join(context.args)
+    if nickname:
+        user_data[user_id]["nickname"] = nickname
+        save_user_data(user_data)
+        update.message.reply_text(f"Nickname set to {nickname}.")
+    else:
+        update.message.reply_text("Use /set nickname <your_nickname> to set a nickname.")
+
+# Выбор языка
+def set_language(update: Update, context):
+    keyboard = [[InlineKeyboardButton("RU", callback_data='RU'),
+                 InlineKeyboardButton("EN", callback_data='EN'),
+                 InlineKeyboardButton("PL", callback_data='PL')]]
+    # Добавьте кнопки для остальных языков, поддерживаемых DeepL
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    update.message.reply_text("Please select your language:", reply_markup=reply_markup)
+
+# Обработка выбора языка
+def button(update: Update, context):
+    query = update.callback_query
+    query.answer()
+    user_id = str(query.from_user.id)
+    language = query.data
+    user_data[user_id]["language"] = language
+    save_user_data(user_data)
+    query.edit_message_text(text=f"Language set to {language}.")
+
+# Всплывающее меню
+def send_intro_message(update, context):
+    user_id = str(update.message.from_user.id)
+    if not user_data[user_id]["nickname"] or not user_data[user_id]["language"]:
+        keyboard = [
+            [InlineKeyboardButton("/set nickname", switch_inline_query_current_chat=" /set nickname ")],
+            [InlineKeyboardButton("/set language", switch_inline_query_current_chat=" /set language ")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        update.message.reply_text("Please set your nickname and language.", reply_markup=reply_markup)
+
+# Перевод сообщения с добавлением никнейма отправителя
+def translate_message(update: Update, context):
+    user_id = str(update.message.from_user.id)
+    sender_nickname = user_data[user_id]["nickname"]
+    message = update.message.text
+
+    # Отправляем перевод на все языки, выбранные участниками
+    for uid, data in user_data.items():
+        if data["language"]:
+            translation = translator.translate_text(message, target_lang=data["language"]).text
+            context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=f"{translation} ({data['language']})",
+                reply_to_message_id=update.message.message_id
+            )
+
+# Ограничение прав на 30 минут
+def restrict_user(update, context):
+    user_id = str(update.message.from_user.id)
+    user_data[user_id]["warnings"] += 1
+    if user_data[user_id]["warnings"] >= 5:
+        context.bot.restrict_chat_member(
+            update.effective_chat.id,
+            user_id=int(user_id),
+            permissions={"can_send_messages": False},
+            until_date=update.message.date + 1800  # 30 минут
+        )
+        context.bot.send_message(
+            chat_id=user_id,
+            text="You are restricted for 30 minutes. Try again later."
+        )
+
+# Основная функция
+def main():
+    updater = Updater("7622298560:AAHdjRQu22jbzO_TLLdyOV3-h6fANfJA6C0")
+    dp = updater.dispatcher
+    
+    dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(CommandHandler("set_nickname", set_nickname))
+    dp.add_handler(CommandHandler("set_language", set_language))
+    dp.add_handler(CallbackQueryHandler(button))
+    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, translate_message))
+    
+    updater.start_polling()
+    updater.idle()
+
+if __name__ == "__main__":
+    main()
